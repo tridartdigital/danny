@@ -1,0 +1,51 @@
+import {chromium} from 'playwright';
+import assert from 'node:assert/strict';
+import {existsSync} from 'node:fs';
+import {mkdir} from 'node:fs/promises';
+import {spawn} from 'node:child_process';
+const port=Number(process.env.TEST_PORT||3197),base=`http://127.0.0.1:${port}`;
+const server=spawn(process.execPath,['server.mjs'],{cwd:new URL('../',import.meta.url),env:{...process.env,PORT:String(port)},stdio:['ignore','pipe','pipe']});
+let browser;
+try{
+ await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Server startup timeout')),10000);server.once('error',reject);server.once('exit',code=>{clearTimeout(timer);reject(new Error('Test server exited: '+code));});server.stdout.once('data',()=>{clearTimeout(timer);resolve();});});
+ const executablePath=process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE||(existsSync('/usr/bin/chromium')?'/usr/bin/chromium':undefined);
+ browser=await chromium.launch({executablePath,headless:true,args:['--no-sandbox']});
+ const page=await browser.newPage({viewport:{width:1440,height:1100}}),errors=[];
+ page.on('pageerror',e=>errors.push(e.message));
+ await mkdir('test-results',{recursive:true});
+ await page.clock.install();await page.goto(base);await page.waitForFunction(()=>!document.querySelector('#start').disabled);await page.evaluate(()=>document.fonts.ready);
+ await page.screenshot({path:'test-results/title-desktop.png',fullPage:true});
+ await page.click('#start');await page.getByRole('button',{name:'COMEÇAR A INVESTIGAÇÃO'}).click();
+ async function move(key,ms){await page.keyboard.down(key);await page.clock.runFor(ms);await page.keyboard.up(key);}
+ async function e(){await page.keyboard.press('e');}
+ await move('d',1400);await e();assert.match(await page.locator('#modal-title').textContent(),/carta/);
+ await page.screenshot({path:'test-results/document.png'});await page.getByRole('button',{name:'Guardar no diário'}).click();
+ await move('d',4100);await e();assert.equal(await page.locator('#location').textContent(),'ARQUIVO MUNICIPAL');
+ await move('d',2600);await page.screenshot({path:'test-results/archive.png'});await e();
+ await page.getByRole('button',{name:'1. ICMS e ISS'}).click();assert.match(await page.locator('#modal-title').textContent(),/rejeitou/);
+ await page.getByRole('button',{name:'Voltar ao documento'}).click();await page.getByRole('button',{name:'2. PIS e Cofins'}).click();await page.getByRole('button',{name:'Continuar a investigação'}).click();
+ await page.keyboard.press('i');assert.equal(await page.locator('.evidence-slot.found').count(),2);assert.equal(await page.locator('.evidence-slot:disabled').count(),2);
+ await page.getByRole('button',{name:'CBS CBS',exact:true}).click();assert.match(await page.locator('#modal-title').textContent(),/CBS/);
+ await page.getByRole('button',{name:'Voltar às evidências'}).click();await page.getByRole('button',{name:'Fechar diário'}).click();
+ await move('d',3400);await e();assert.equal(await page.locator('#location').textContent(),'CÂMARA DOS ECOS');
+ await move('d',2100);await e();await page.getByRole('button',{name:'1. O local do consumo'}).click();await page.getByRole('button',{name:'Continuar a investigação'}).click();
+ await move('d',3900);await e();assert.equal(await page.locator('#location').textContent(),'POSTO DA ÚLTIMA LUZ');
+ await move('d',1750);await e();await page.getByRole('button',{name:'3. Bens e serviços'}).click();await page.getByRole('button',{name:'Continuar a investigação'}).click();
+ await page.keyboard.press('f');assert.match(await page.locator('#flash').textContent(),/APAGADA/);await page.keyboard.press('f');
+ await move('d',4200);await e();assert.equal(await page.locator('#modal-title').textContent(),'Amanhã tem outro nome.');await page.getByRole('button',{name:'Revisitar os arquivos'}).click();
+ await page.click('#journal-button');assert.equal(await page.locator('.journal-entry').count(),4);assert.equal(await page.locator('.evidence-slot.found').count(),4);await page.screenshot({path:'test-results/inventory.png'});await page.getByRole('button',{name:'Fechar diário'}).click();
+ await page.keyboard.press('Escape');assert.match(await page.locator('#modal-title').textContent(),/Respire/);await page.keyboard.press('Escape');assert.equal(await page.locator('#modal').isVisible(),false);
+ await page.reload();await page.waitForFunction(()=>!document.querySelector('#continue').disabled);await page.click('#continue');assert.match(await page.locator('#seals').textContent(),/3 \/ 3/);
+ await page.click('#sound');assert.match(await page.locator('.sound-state').textContent(),/ON/);await page.click('#sound');
+ await page.click('#fullscreen');assert.equal(await page.evaluate(()=>Boolean(document.fullscreenElement)),true);await page.evaluate(()=>document.exitFullscreen());
+ const mobile=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});mobile.on('pageerror',e=>errors.push(e.message));
+ await mobile.clock.install();await mobile.goto(base);await mobile.waitForFunction(()=>!document.querySelector('#start').disabled);await mobile.evaluate(()=>document.fonts.ready);
+ assert.equal(await mobile.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);await mobile.screenshot({path:'test-results/title-mobile.png',fullPage:true});
+ await mobile.click('#start');await mobile.getByRole('button',{name:'COMEÇAR A INVESTIGAÇÃO'}).click();
+ const arrow=await mobile.locator('.mobile-controls [data-move="right"]').boundingBox();await mobile.mouse.move(arrow.x+arrow.width/2,arrow.y+arrow.height/2);await mobile.mouse.down();await mobile.clock.runFor(1400);await mobile.mouse.up();await mobile.click('#mobile-interact');
+ assert.match(await mobile.locator('#modal-title').textContent(),/carta/);await mobile.screenshot({path:'test-results/document-mobile.png'});
+ const standalone=await browser.newPage();standalone.on('pageerror',e=>errors.push(e.message));await standalone.route('**/*',route=>route.request().url().endsWith('/dist/danny.html')?route.continue():route.abort());
+ await standalone.goto(base+'/dist/danny.html');await standalone.waitForFunction(()=>!document.querySelector('#start').disabled);await standalone.context().setOffline(true);await standalone.click('#start');await standalone.getByRole('button',{name:'COMEÇAR A INVESTIGAÇÃO'}).click();assert.equal(await standalone.locator('#hud').isVisible(),true);
+ assert.deepEqual(errors,[]);
+ console.log('PASS: 4 scenes, full chapter and ending, wrong-answer retry, evidence inventory and inspection, flashlight, save/reload, pause, audio, fullscreen, mobile movement/interaction, standalone without external resources. Zero JavaScript errors.');
+} finally {if(browser)await browser.close();server.kill();}
